@@ -11,6 +11,17 @@
 - 输出可直接打开的 `.docx`
 - 提供无需 Python 环境的独立软件版本
 
+## 依赖
+
+运行依赖：
+
+- `python-docx`
+- `tkinter`（Windows 自带）
+
+打包依赖：
+
+- `pyinstaller`
+
 ## 快速开始
 
 ### 软件版（无需 Python）
@@ -22,7 +33,12 @@
 ### 代码版（开发与二次修改）
 
 1. 确保已安装 Python 3
-2. 安装依赖（如有需要）
+2. 安装依赖（必需）
+
+```powershell
+python -m pip install python-docx
+```
+
 3. 运行：
 
 ```powershell
@@ -53,6 +69,12 @@ python app.py
 
 ## 打包（生成软件版）
 
+打包依赖：
+
+```powershell
+python -m pip install pyinstaller
+```
+
 在 `conda base` 中执行：
 
 ```powershell
@@ -63,6 +85,11 @@ python app.py
 
 - `software\dist\ChatMarkdownToWord\ChatMarkdownToWord.exe`
 - `software\dist\ChatMarkdownToWord-portable.zip`
+
+说明：
+
+- `software\build` 仅为打包中间目录，不是可运行版本
+- 可运行版本仅在 `software\dist` 中
 
 ## 说明
 
