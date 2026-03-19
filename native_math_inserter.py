@@ -115,8 +115,103 @@ COMMAND_TEXT = {
     "top": "\u22a4",
 }
 STYLE_COMMANDS = {"mathcal": ("scr", "script"), "mathbb": ("scr", "double-struck"), "boldsymbol": ("sty", "b")}
+COMMAND_TEXT.update({
+    "leqslant": "\u2264",
+    "geqslant": "\u2265",
+    "leqq": "\u2266",
+    "geqq": "\u2267",
+    "ll": "\u226a",
+    "gg": "\u226b",
+    "nexists": "\u2204",
+    "ni": "\u220b",
+    "owns": "\u220b",
+    "simeq": "\u2243",
+    "doteq": "\u2250",
+    "triangleq": "\u225c",
+    "gets": "\u2190",
+    "longrightarrow": "\u2192",
+    "longleftarrow": "\u2190",
+    "longleftrightarrow": "\u2194",
+    "Longrightarrow": "\u21d2",
+    "Longleftarrow": "\u21d0",
+    "Longleftrightarrow": "\u21d4",
+    "iff": "\u21d4",
+    "implies": "\u21d2",
+    "impliedby": "\u21d0",
+    "sup": "sup",
+    "inf": "inf",
+    "argmax": "argmax",
+    "argmin": "argmin",
+    "equiv": "\u2261",
+    "propto": "\u221d",
+    "cong": "\u2245",
+    "oint": "\u222e",
+    "land": "\u2227",
+    "wedge": "\u2227",
+    "lor": "\u2228",
+    "vee": "\u2228",
+    "subsetneq": "\u228a",
+    "supsetneq": "\u228b",
+    "bigvee": "\u22c1",
+    "bigwedge": "\u22c0",
+    "perp": "\u22a5",
+    "therefore": "\u2234",
+    "because": "\u2235",
+    "angle": "\u2220",
+    "triangle": "\u25b3",
+    "degree": "\u00b0",
+    "cot": "cot",
+    "sec": "sec",
+    "csc": "csc",
+    "lim": "lim",
+    "limsup": "lim sup",
+    "liminf": "lim inf",
+    "arg": "arg",
+    "det": "det",
+    "gcd": "gcd",
+    "Pr": "Pr",
+    "bot": "\u22a5",
+    "Re": "\u211c",
+    "Im": "\u2111",
+})
+
 OPEN_DELIMS = {"(": ")", "[": "]", r"\{": r"\}", "|": "|", "\u2016": "\u2016"}
 DELIM_RENDER = {r"\{": "{", r"\}": "}", "(": "(", ")": ")", "[": "[", "]": "]", "|": "|", "\u2016": "\u2016"}
+
+ACCENT_COMMANDS = {
+    "hat": "\u0302",
+    "widehat": "\u0302",
+    "bar": "\u0304",
+    "overline": "\u0305",
+    "tilde": "\u0303",
+    "widetilde": "\u0303",
+    "vec": "\u20d7",
+    "overrightarrow": "\u20d7",
+    "dot": "\u0307",
+    "ddot": "\u0308",
+    "check": "\u030c",
+    "breve": "\u0306",
+}
+LIMIT_STYLE_BASES = {
+    "max",
+    "min",
+    "lim",
+    "lim sup",
+    "lim inf",
+    "sup",
+    "inf",
+    "argmax",
+    "argmin",
+    "\u2211",
+    "\u220f",
+    "\u222b",
+    "\u222e",
+    "\u222a",
+    "\u2229",
+    "\u22c1",
+    "\u22c0",
+}
+
 
 @dataclass
 class Token:
@@ -146,6 +241,19 @@ class DelimitedNode:
 class FractionNode:
     numerator: SequenceNode
     denominator: SequenceNode
+
+
+@dataclass
+class RadicalNode:
+    radicand: SequenceNode
+    degree: SequenceNode | None = None
+
+
+@dataclass
+class MatrixNode:
+    rows: list[list[SequenceNode]]
+    left: str | None = None
+    right: str | None = None
 
 
 @dataclass
@@ -182,6 +290,10 @@ class LatexTokenizer:
                 self.index += 1
                 continue
             if char == "\\":
+                if self.index + 1 < self.length and self.text[self.index + 1] == "\\":
+                    tokens.append(Token("row_sep", "\\\\"))
+                    self.index += 2
+                    continue
                 if self.index + 1 < self.length and self.text[self.index + 1] in "{}[]()|":
                     tokens.append(Token("delim", self.text[self.index:self.index + 2]))
                     self.index += 2
@@ -194,7 +306,7 @@ class LatexTokenizer:
                 tokens.append(Token("text", char))
                 self.index += 1
                 continue
-            if char in "{}_^()[],:=+-*|":
+            if char in "{}_^()[],:=+-*|&":
                 tokens.append(Token("char", char))
                 self.index += 1
                 continue
@@ -276,6 +388,105 @@ class LatexParser:
             self.consume()
         return content
 
+    def sequence_to_text(self, sequence: SequenceNode) -> str:
+        parts: list[str] = []
+        for item in sequence.items:
+            if isinstance(item, SymbolNode):
+                parts.append(item.text)
+            elif isinstance(item, SequenceNode):
+                parts.append(self.sequence_to_text(item))
+            else:
+                parts.append(str(item))
+        return "".join(parts)
+
+    def matches_environment_end(self, env_name: str) -> bool:
+        if self.index >= len(self.tokens):
+            return False
+        token = self.tokens[self.index]
+        if token.kind != "command" or token.value != "end":
+            return False
+        cursor = self.index + 1
+        if cursor >= len(self.tokens) or self.tokens[cursor].value != "{":
+            return False
+        cursor += 1
+        parts: list[str] = []
+        while cursor < len(self.tokens) and self.tokens[cursor].value != "}":
+            parts.append(self.tokens[cursor].value)
+            cursor += 1
+        if cursor >= len(self.tokens):
+            return False
+        return "".join(parts) == env_name
+
+    def consume_environment_end(self, env_name: str) -> None:
+        self.consume()
+        end_name = self.sequence_to_text(self.parse_required_group())
+        if end_name != env_name:
+            raise ValueError(f"Expected \\end{{{env_name}}}, got \\end{{{end_name}}}")
+
+    def is_empty_sequence(self, sequence: SequenceNode) -> bool:
+        if not sequence.items:
+            return True
+        for item in sequence.items:
+            if isinstance(item, SymbolNode) and item.text == "":
+                continue
+            if isinstance(item, SequenceNode) and self.is_empty_sequence(item):
+                continue
+            return False
+        return True
+
+    def parse_environment_body(self, env_name: str) -> list[list[SequenceNode]]:
+        if env_name == "array" and self.peek() and self.peek().value == "{":
+            self.parse_required_group()
+
+        rows: list[list[SequenceNode]] = []
+        current_row: list[SequenceNode] = []
+        current_cell_items: list[object] = []
+
+        while self.index < len(self.tokens):
+            if self.matches_environment_end(env_name):
+                self.consume_environment_end(env_name)
+                break
+
+            token = self.peek()
+            if token is None:
+                break
+            if token.kind == "char" and token.value == "&":
+                self.consume()
+                current_row.append(SequenceNode(current_cell_items))
+                current_cell_items = []
+                continue
+            if token.kind == "row_sep":
+                self.consume()
+                current_row.append(SequenceNode(current_cell_items))
+                current_cell_items = []
+                rows.append(current_row)
+                current_row = []
+                continue
+            current_cell_items.append(self.parse_atom())
+
+        current_row.append(SequenceNode(current_cell_items))
+        rows.append(current_row)
+
+        while rows and len(rows[-1]) == 1 and self.is_empty_sequence(rows[-1][0]):
+            rows.pop()
+        return rows or [[SequenceNode([])]]
+
+    def parse_environment(self, env_name: str):
+        delimiter_environments = {
+            "pmatrix": ("(", ")"),
+            "bmatrix": ("[", "]"),
+            "Bmatrix": ("{", "}"),
+            "vmatrix": ("|", "|"),
+            "Vmatrix": (chr(0x2016), chr(0x2016)),
+            "cases": ("{", ""),
+        }
+        if env_name in delimiter_environments:
+            left, right = delimiter_environments[env_name]
+            return MatrixNode(self.parse_environment_body(env_name), left=left, right=right)
+        if env_name in {"matrix", "smallmatrix", "array", "aligned", "align", "alignedat", "gathered", "split"}:
+            return MatrixNode(self.parse_environment_body(env_name))
+        return SymbolNode(f"\\begin{{{env_name}}}")
+
     def parse_primary(self):
         token = self.peek()
         if token is None:
@@ -294,6 +505,9 @@ class LatexParser:
 
         if token.kind == "command":
             command = self.consume().value
+            if command == "begin":
+                env_name = self.sequence_to_text(self.parse_required_group())
+                return self.parse_environment(env_name)
             if command in STYLE_COMMANDS:
                 content = self.parse_required_group()
                 if len(content.items) == 1 and isinstance(content.items[0], SymbolNode):
@@ -305,14 +519,34 @@ class LatexParser:
                     else:
                         content_items.append(item)
                 return SequenceNode(content_items)
-            if command == "frac":
+            if command in {"frac", "dfrac", "tfrac", "cfrac"}:
                 return FractionNode(self.parse_required_group(), self.parse_required_group())
-            if command == "hat":
-                return AccentNode("̂", self.parse_required_group())
-            if command in {"xrightarrow", "xleftarrow"}:
+            if command in {"binom", "dbinom", "tbinom"}:
+                return MatrixNode(
+                    [[self.parse_required_group()], [self.parse_required_group()]],
+                    left="(",
+                    right=")",
+                )
+            if command == "sqrt":
+                degree = self.parse_optional_group("[", "]")
+                return RadicalNode(
+                    self.parse_required_group(),
+                    degree=degree if degree and degree.items else None,
+                )
+            if command in ACCENT_COMMANDS:
+                return AccentNode(ACCENT_COMMANDS[command], self.parse_required_group())
+            if command in {"xrightarrow", "xleftarrow", "xleftrightarrow", "xRightarrow", "xLeftarrow", "xLeftrightarrow"}:
                 lower = self.parse_optional_group("[", "]")
                 upper = self.parse_required_group()
-                arrow = SymbolNode("\u2192" if command == "xrightarrow" else "\u2190")
+                arrow_text = {
+                    "xrightarrow": "\u2192",
+                    "xleftarrow": "\u2190",
+                    "xleftrightarrow": "\u2194",
+                    "xRightarrow": "\u21d2",
+                    "xLeftarrow": "\u21d0",
+                    "xLeftrightarrow": "\u21d4",
+                }[command]
+                arrow = SymbolNode(arrow_text)
                 return LimitNode(arrow, lower=lower if lower and lower.items else None, upper=upper if upper and upper.items else None)
             return SymbolNode(COMMAND_TEXT.get(command, "\\" + command))
 
@@ -391,6 +625,24 @@ class OmmlBuilder:
             return result
         if isinstance(node, SymbolNode):
             return [self.create_run(node.text, style=node.style)]
+        if isinstance(node, MatrixNode):
+            matrix = ET.Element(f"{M}m")
+            for row in node.rows:
+                matrix_row = ET.SubElement(matrix, f"{M}mr")
+                for cell in row:
+                    cell_element = ET.SubElement(matrix_row, f"{M}e")
+                    self.append_sequence(cell_element, cell)
+            if node.left is None and node.right is None:
+                return [matrix]
+            delimiter = ET.Element(f"{M}d")
+            dpr = ET.SubElement(delimiter, f"{M}dPr")
+            beg = ET.SubElement(dpr, f"{M}begChr")
+            beg.set(f"{M}val", node.left or "")
+            end = ET.SubElement(dpr, f"{M}endChr")
+            end.set(f"{M}val", node.right or "")
+            content = ET.SubElement(delimiter, f"{M}e")
+            content.append(matrix)
+            return [delimiter]
         if isinstance(node, DelimitedNode):
             delimiter = ET.Element(f"{M}d")
             dpr = ET.SubElement(delimiter, f"{M}dPr")
@@ -408,6 +660,18 @@ class OmmlBuilder:
             denominator = ET.SubElement(fraction, f"{M}den")
             self.append_sequence(denominator, node.denominator)
             return [fraction]
+        if isinstance(node, RadicalNode):
+            radical = ET.Element(f"{M}rad")
+            radical_pr = ET.SubElement(radical, f"{M}radPr")
+            if node.degree is None:
+                deg_hide = ET.SubElement(radical_pr, f"{M}degHide")
+                deg_hide.set(f"{M}val", "1")
+            else:
+                degree = ET.SubElement(radical, f"{M}deg")
+                self.append_sequence(degree, node.degree)
+            base = ET.SubElement(radical, f"{M}e")
+            self.append_sequence(base, node.radicand)
+            return [radical]
         if isinstance(node, AccentNode):
             accent = ET.Element(f"{M}acc")
             accent_pr = ET.SubElement(accent, f"{M}accPr")
@@ -419,7 +683,7 @@ class OmmlBuilder:
         if isinstance(node, LimitNode):
             return self.build_limit(node.base, lower=node.lower, upper=node.upper)
         if isinstance(node, ScriptNode):
-            if isinstance(node.base, SymbolNode) and node.base.text in {"max", "min"}:
+            if isinstance(node.base, SymbolNode) and node.base.text in LIMIT_STYLE_BASES:
                 return self.build_limit(node.base, lower=node.sub, upper=node.sup)
             tag = f"{M}sSubSup" if node.sub is not None and node.sup is not None else (f"{M}sSub" if node.sub is not None else f"{M}sSup")
             script = ET.Element(tag)

@@ -122,6 +122,19 @@ MATHBB_CHAR_MAP = {
 
 INLINE_PATTERN = re.compile(r"(`[^`]+`|\\\([^\n]+?\\\)|\$\$.*?\$\$|\$[^$\n]+\$|\*\*[^*\n]+\*\*|\*[^*\n]+\*)")
 TEXT_WRAPPER_COMMANDS = ("text", "mathrm", "mathbf", "operatorname", "mathit")
+OPERATORNAME_COMMANDS = {
+    "lim": r"\lim",
+    "limsup": r"\limsup",
+    "liminf": r"\liminf",
+    "sup": r"\sup",
+    "inf": r"\inf",
+    "argmax": r"\argmax",
+    "argmin": r"\argmin",
+    "det": r"\det",
+    "gcd": r"\gcd",
+    "pr": r"\Pr",
+}
+
 BULLET_ITEM_PATTERN = re.compile(r"^(?P<indent>\s*)(?P<marker>[-*])\s+(?P<text>.+)$")
 ORDERED_ITEM_PATTERN = re.compile(r"^(?P<indent>\s*)(?P<number>\d+)[.)]\s+(?P<text>.+)$")
 
@@ -381,10 +394,40 @@ def normalize_preserved_command(text: str, command: str) -> str:
     return "".join(parts)
 
 
+def normalize_operator_name(content: str) -> str:
+    normalized = normalize_equation_for_word(content).strip()
+    collapsed = re.sub(r"\s+", "", normalized).lower()
+    return OPERATORNAME_COMMANDS.get(collapsed, normalized)
+
+
 def normalize_equation_for_word(text: str) -> str:
     value = text.strip().replace("\n", " ")
     value = replace_spacing_commands(value)
     value = replace_extended_arrows(value)
+    value = value.replace(r"\operatorname*", r"\operatorname")
+    for source, target in (
+        (r"\dfrac", r"\frac"),
+        (r"\tfrac", r"\frac"),
+        (r"\cfrac", r"\frac"),
+    ):
+        value = value.replace(source, target)
+    for source, target in (
+        (r"\gets", r"\leftarrow"),
+        (r"\longrightarrow", r"\rightarrow"),
+        (r"\longleftarrow", r"\leftarrow"),
+        (r"\longleftrightarrow", r"\leftrightarrow"),
+        (r"\Longrightarrow", r"\Rightarrow"),
+        (r"\Longleftarrow", r"\Leftarrow"),
+        (r"\Longleftrightarrow", r"\Leftrightarrow"),
+        (r"\iff", r"\Leftrightarrow"),
+        (r"\implies", r"\Rightarrow"),
+        (r"\impliedby", r"\Leftarrow"),
+        (r"\leqslant", r"\leq"),
+        (r"\geqslant", r"\geq"),
+        (r"\leqq", r"\leq"),
+        (r"\geqq", r"\geq"),
+    ):
+        value = value.replace(source, target)
     for source, target in (
         (r"\left(", "("),
         (r"\right)", ")"),
@@ -406,8 +449,9 @@ def normalize_equation_for_word(text: str) -> str:
     value = normalize_preserved_command(value, "mathbb")
     value = normalize_preserved_command(value, "boldsymbol")
     value = normalize_preserved_command(value, "hat")
-    for command in ("mathbf", "mathrm", "mathit", "operatorname", "text"):
+    for command in ("mathbf", "mathrm", "mathit", "text"):
         value = replace_latex_func(value, command, lambda arg: normalize_equation_for_word(arg))
+    value = replace_latex_func(value, "operatorname", normalize_operator_name)
     value = value.replace(r"\bigcup", r"\cup")
     value = value.replace(r"\bigcap", r"\cap")
     value = re.sub(r"\s+", " ", value)
