@@ -2,6 +2,7 @@
 
 import argparse
 import json
+import re
 from pathlib import Path
 
 from docx import Document
@@ -97,6 +98,35 @@ def apply_body_paragraph_format(paragraph, *, first_line_indent: bool = True, le
     if alignment is not None:
         paragraph.alignment = alignment
 
+
+def add_link_run(paragraph, text: str, url: str, *, size: int = 12) -> None:
+    display_text = text.strip() if text.strip() else url
+    link_run = paragraph.add_run(display_text)
+    apply_run_font(link_run, size=size)
+    link_run.font.color.rgb = RGBColor(0x05, 0x63, 0xC1)
+    link_run.underline = True
+    if display_text != url:
+        tail_run = paragraph.add_run(f" ({url})")
+        apply_run_font(tail_run, size=size)
+
+
+def resolve_image_path(source: str, source_dir: str | None) -> Path | None:
+    source = source.strip()
+    if not source:
+        return None
+    if re.match(r"^[A-Za-z][A-Za-z0-9+.-]*://", source):
+        return None
+    candidate = Path(source)
+    if candidate.is_absolute():
+        return candidate if candidate.exists() else None
+    if source_dir:
+        relative = Path(source_dir) / candidate
+        if relative.exists():
+            return relative
+    if candidate.exists():
+        return candidate
+    return None
+
 class MathCursor:
     def __init__(self, math_items: list[dict]) -> None:
         self.math_items = math_items
@@ -112,41 +142,101 @@ class MathCursor:
         return placeholder
 
 
-def add_inline_runs(paragraph, runs: list[dict], math_cursor: MathCursor, heading_level: int | None = None) -> None:
+def add_inline_runs(
+    paragraph,
+    runs: list[dict],
+    math_cursor: MathCursor,
+    heading_level: int | None = None,
+    source_dir: str | None = None,
+) -> None:
     size = HEADING_SIZES.get(heading_level, 12) if heading_level else 12
     for run in runs:
-        if run["type"] == "math":
+        run_type = run["type"]
+        if run_type == "math":
             text_run = paragraph.add_run(math_cursor.next_placeholder())
             apply_run_font(text_run, cn_font="Cambria Math", en_font="Cambria Math", size=size)
             continue
+        if run_type == "link":
+            add_link_run(paragraph, run.get("text", run.get("url", "")), run.get("url", ""), size=size)
+            continue
+        if run_type == "image":
+            source = run.get("src", "")
+            alt_text = run.get("alt", "image")
+            resolved_path = resolve_image_path(source, source_dir)
+            if resolved_path:
+                image_run = paragraph.add_run()
+                image_run.add_picture(str(resolved_path), width=Cm(12))
+            else:
+                fallback = paragraph.add_run(f"[图片: {alt_text}]({source})")
+                apply_run_font(fallback, size=size, italic=True)
+            continue
 
-        text_run = paragraph.add_run(run["text"])
-        if run["type"] == "bold":
+        text = run.get("text", "")
+        if not text:
+            continue
+        text_run = paragraph.add_run(text)
+        if run_type == "bold":
             apply_run_font(text_run, size=size, bold=True)
-        elif run["type"] == "italic":
+        elif run_type == "italic":
             apply_run_font(text_run, size=size, italic=True)
-        elif run["type"] == "code":
+        elif run_type == "code":
             apply_run_font(text_run, cn_font=CODE_FONT, en_font=CODE_FONT, size=11)
             text_run.font.color.rgb = RGBColor(0x33, 0x33, 0x33)
         else:
             apply_run_font(text_run, size=size)
 
 
-def add_list_paragraph(document: Document, item: dict, math_cursor: MathCursor) -> None:
+def add_list_paragraph(document: Document, item: dict, math_cursor: MathCursor, source_dir: str | None = None) -> None:
     paragraph = document.add_paragraph()
     apply_body_paragraph_format(paragraph, first_line_indent=False, left_indent_cm=0.74 * (item.get("level", 0) + 1))
     paragraph.paragraph_format.hanging_indent = Cm(0.6)
 
-    prefix = f"{item.get('start', 1)}. " if item.get("ordered") else "- "
+    if item.get("ordered"):
+        prefix = f"{item.get('start', 1)}. "
+    elif item.get("task") is True:
+        prefix = "☑ "
+    elif item.get("task") is False:
+        prefix = "☐ "
+    else:
+        prefix = "- "
     prefix_run = paragraph.add_run(prefix)
     apply_run_font(prefix_run, size=12)
-    add_inline_runs(paragraph, item["runs"], math_cursor)
+    add_inline_runs(paragraph, item["runs"], math_cursor, source_dir=source_dir)
+
+
+def add_table_block(document: Document, block: dict, math_cursor: MathCursor, source_dir: str | None = None) -> None:
+    header = block.get("header", [])
+    rows = block.get("rows", [])
+    column_count = max([len(header), *[len(row) for row in rows], 1])
+    table = document.add_table(rows=1 + len(rows), cols=column_count)
+    try:
+        table.style = "Table Grid"
+    except KeyError:
+        pass
+
+    for column_index in range(column_count):
+        cell = table.rows[0].cells[column_index]
+        cell_runs = header[column_index] if column_index < len(header) else []
+        paragraph = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
+        apply_body_paragraph_format(paragraph, first_line_indent=False)
+        add_inline_runs(paragraph, cell_runs, math_cursor, source_dir=source_dir)
+        for run in paragraph.runs:
+            run.bold = True
+
+    for row_index, row in enumerate(rows, start=1):
+        for column_index in range(column_count):
+            cell = table.rows[row_index].cells[column_index]
+            cell_runs = row[column_index] if column_index < len(row) else []
+            paragraph = cell.paragraphs[0] if cell.paragraphs else cell.add_paragraph()
+            apply_body_paragraph_format(paragraph, first_line_indent=False)
+            add_inline_runs(paragraph, cell_runs, math_cursor, source_dir=source_dir)
 
 
 def build_document(payload: dict, output_docx: str) -> None:
     document = Document()
     configure_styles(document)
     math_cursor = MathCursor(payload.get("math_items", []))
+    source_dir = payload.get("source_dir")
     first_heading_level_one = True
 
     for block in payload.get("blocks", []):
@@ -160,16 +250,16 @@ def build_document(payload: dict, output_docx: str) -> None:
             if level == 1:
                 paragraph.alignment = WD_ALIGN_PARAGRAPH.CENTER
                 first_heading_level_one = False
-            add_inline_runs(paragraph, block["runs"], math_cursor, heading_level=level)
+            add_inline_runs(paragraph, block["runs"], math_cursor, heading_level=level, source_dir=source_dir)
         elif block_type == "paragraph":
             paragraph = document.add_paragraph(style="Normal")
             apply_body_paragraph_format(paragraph)
-            add_inline_runs(paragraph, block["runs"], math_cursor)
+            add_inline_runs(paragraph, block["runs"], math_cursor, source_dir=source_dir)
         elif block_type == "blockquote":
             paragraph = document.add_paragraph(style="Normal")
             apply_body_paragraph_format(paragraph, first_line_indent=False, left_indent_cm=1.0)
             add_paragraph_border(paragraph, "left", "6366F1", "12")
-            add_inline_runs(paragraph, block["runs"], math_cursor)
+            add_inline_runs(paragraph, block["runs"], math_cursor, source_dir=source_dir)
             for run in paragraph.runs:
                 run.italic = True
         elif block_type == "code_block":
@@ -183,7 +273,9 @@ def build_document(payload: dict, output_docx: str) -> None:
             apply_run_font(code_run, cn_font=CODE_FONT, en_font=CODE_FONT, size=9)
         elif block_type == "list":
             for item in block.get("items", []):
-                add_list_paragraph(document, item, math_cursor)
+                add_list_paragraph(document, item, math_cursor, source_dir=source_dir)
+        elif block_type == "table":
+            add_table_block(document, block, math_cursor, source_dir=source_dir)
         elif block_type == "separator":
             paragraph = document.add_paragraph()
             apply_body_paragraph_format(paragraph, first_line_indent=False)

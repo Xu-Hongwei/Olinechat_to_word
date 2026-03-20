@@ -376,6 +376,9 @@ class LatexParser:
             return SequenceNode([])
         if token.kind == "char" and token.value == "{":
             return self.parse_required_group()
+        if token.kind == "command" and token.value in {"text", "mathrm", "mathbf", "mathit", "operatorname"}:
+            self.consume()
+            return self.parse_required_group()
         return SequenceNode([self.parse_primary()])
 
     def parse_optional_group(self, open_char: str, close_char: str) -> SequenceNode | None:
@@ -548,6 +551,14 @@ class LatexParser:
                 }[command]
                 arrow = SymbolNode(arrow_text)
                 return LimitNode(arrow, lower=lower if lower and lower.items else None, upper=upper if upper and upper.items else None)
+            if command in {"overset", "stackrel"}:
+                upper = self.parse_required_group()
+                base = self.parse_required_group()
+                return LimitNode(base, upper=upper if upper.items else None)
+            if command == "underset":
+                lower = self.parse_required_group()
+                base = self.parse_required_group()
+                return LimitNode(base, lower=lower if lower.items else None)
             return SymbolNode(COMMAND_TEXT.get(command, "\\" + command))
 
         return SymbolNode(self.consume().value)

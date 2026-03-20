@@ -120,7 +120,9 @@ MATHBB_CHAR_MAP = {
     "W": "𝕎", "X": "𝕏", "Y": "𝕐",
 }
 
-INLINE_PATTERN = re.compile(r"(`[^`]+`|\\\([^\n]+?\\\)|\$\$.*?\$\$|\$[^$\n]+\$|\*\*[^*\n]+\*\*|\*[^*\n]+\*)")
+INLINE_PATTERN = re.compile(
+    r"(`[^`]+`|!\[[^\]\n]*\]\([^)]+\)|\[[^\]\n]+\]\([^)]+\)|\\\([^\n]+?\\\)|\$\$[^\n]*?\$\$|(?<!\\)\$(?!\$)(?=\S)(?:[^$\n]|\\\$)*?(?<=\S)(?<!\\)\$|\*\*[^*\n]+\*\*|\*[^*\n]+\*)"
+)
 TEXT_WRAPPER_COMMANDS = ("text", "mathrm", "mathbf", "operatorname", "mathit")
 OPERATORNAME_COMMANDS = {
     "lim": r"\lim",
@@ -137,6 +139,10 @@ OPERATORNAME_COMMANDS = {
 
 BULLET_ITEM_PATTERN = re.compile(r"^(?P<indent>\s*)(?P<marker>[-*])\s+(?P<text>.+)$")
 ORDERED_ITEM_PATTERN = re.compile(r"^(?P<indent>\s*)(?P<number>\d+)[.)]\s+(?P<text>.+)$")
+TASK_MARKER_PATTERN = re.compile(r"^\[(?P<mark>[ xX])\]\s+(?P<text>.+)$")
+TABLE_SEPARATOR_PATTERN = re.compile(r"^\s*\|?(?:\s*:?-{3,}:?\s*\|)+\s*:?-{3,}:?\s*\|?\s*$")
+LINK_TOKEN_PATTERN = re.compile(r"^\[(?P<text>[^\]]+)\]\((?P<target>.+)\)$")
+IMAGE_TOKEN_PATTERN = re.compile(r"^!\[(?P<alt>[^\]]*)\]\((?P<target>.+)\)$")
 
 
 def get_indent_level(indent: str) -> int:
@@ -150,20 +156,31 @@ def style_math_text(content: str, mapping: dict[str, str]) -> str:
 
 
 def parse_list_item(line: str) -> dict | None:
+    def unpack_list_text(raw_text: str) -> tuple[str, bool | None]:
+        task_match = TASK_MARKER_PATTERN.match(raw_text)
+        if not task_match:
+            return raw_text, None
+        checked = task_match.group("mark").lower() == "x"
+        return task_match.group("text").strip(), checked
+
     bullet_match = BULLET_ITEM_PATTERN.match(line)
     if bullet_match:
+        body_text, checked = unpack_list_text(bullet_match.group("text").strip())
         return {
             "ordered": False,
             "level": get_indent_level(bullet_match.group("indent")),
-            "runs": parse_inline(bullet_match.group("text").strip()),
+            "task": checked,
+            "runs": parse_inline(body_text),
         }
     ordered_match = ORDERED_ITEM_PATTERN.match(line)
     if ordered_match:
+        body_text, checked = unpack_list_text(ordered_match.group("text").strip())
         return {
             "ordered": True,
             "level": get_indent_level(ordered_match.group("indent")),
             "start": int(ordered_match.group("number")),
-            "runs": parse_inline(ordered_match.group("text").strip()),
+            "task": checked,
+            "runs": parse_inline(body_text),
         }
     return None
 
@@ -400,6 +417,39 @@ def normalize_operator_name(content: str) -> str:
     return OPERATORNAME_COMMANDS.get(collapsed, normalized)
 
 
+def normalize_wrapped_text(content: str) -> str:
+    normalized = normalize_equation_for_word(content)
+    return "{" + normalized + "}"
+
+
+def is_table_separator_line(text: str) -> bool:
+    return bool(TABLE_SEPARATOR_PATTERN.match(text.strip()))
+
+
+def split_table_row(text: str) -> list[str]:
+    row = text.strip()
+    if row.startswith("|"):
+        row = row[1:]
+    if row.endswith("|"):
+        row = row[:-1]
+    return [cell.strip() for cell in row.split("|")]
+
+
+def parse_link_target(target: str) -> tuple[str, str | None]:
+    value = target.strip()
+    title: str | None = None
+    if value.startswith("<") and value.endswith(">"):
+        value = value[1:-1].strip()
+        return value, title
+    title_match = re.match(r'^(?P<src>\S+)\s+"(?P<title>[^"]*)"$', value)
+    if title_match:
+        return title_match.group("src"), title_match.group("title")
+    title_match = re.match(r"^(?P<src>\S+)\s+'(?P<title>[^']*)'$", value)
+    if title_match:
+        return title_match.group("src"), title_match.group("title")
+    return value, title
+
+
 def normalize_equation_for_word(text: str) -> str:
     value = text.strip().replace("\n", " ")
     value = replace_spacing_commands(value)
@@ -450,15 +500,15 @@ def normalize_equation_for_word(text: str) -> str:
     value = normalize_preserved_command(value, "boldsymbol")
     value = normalize_preserved_command(value, "hat")
     for command in ("mathbf", "mathrm", "mathit", "text"):
-        value = replace_latex_func(value, command, lambda arg: normalize_equation_for_word(arg))
+        value = replace_latex_func(value, command, normalize_wrapped_text)
     value = replace_latex_func(value, "operatorname", normalize_operator_name)
     value = value.replace(r"\bigcup", r"\cup")
     value = value.replace(r"\bigcap", r"\cap")
     value = re.sub(r"\s+", " ", value)
     return value.strip()
 
-def parse_inline(text: str) -> list[dict[str, str]]:
-    runs: list[dict[str, str]] = []
+def parse_inline(text: str) -> list[dict]:
+    runs: list[dict] = []
     cursor = 0
     for match in INLINE_PATTERN.finditer(text):
         start, end = match.span()
@@ -471,6 +521,35 @@ def parse_inline(text: str) -> list[dict[str, str]]:
             runs.append({"type": "math", "text": normalize_equation_for_word(token[2:-2])})
         elif token.startswith("$") and token.endswith("$"):
             runs.append({"type": "math", "text": normalize_equation_for_word(token[1:-1])})
+        elif token.startswith("![") and token.endswith(")"):
+            image_match = IMAGE_TOKEN_PATTERN.match(token)
+            if image_match:
+                source, title = parse_link_target(image_match.group("target"))
+                image_run = {
+                    "type": "image",
+                    "alt": image_match.group("alt"),
+                    "src": source,
+                }
+                if title:
+                    image_run["title"] = title
+                runs.append(image_run)
+            else:
+                runs.append({"type": "text", "text": token})
+        elif token.startswith("[") and token.endswith(")"):
+            link_match = LINK_TOKEN_PATTERN.match(token)
+            if link_match:
+                source, title = parse_link_target(link_match.group("target"))
+                text_value = link_match.group("text").strip() or source
+                link_run = {
+                    "type": "link",
+                    "text": text_value,
+                    "url": source,
+                }
+                if title:
+                    link_run["title"] = title
+                runs.append(link_run)
+            else:
+                runs.append({"type": "text", "text": token})
         elif token.startswith("**") and token.endswith("**"):
             runs.append({"type": "bold", "text": token[2:-2]})
         elif token.startswith("*") and token.endswith("*"):
@@ -480,7 +559,14 @@ def parse_inline(text: str) -> list[dict[str, str]]:
         cursor = end
     if cursor < len(text):
         runs.append({"type": "text", "text": text[cursor:]})
-    return [run for run in runs if run["text"]]
+    filtered_runs: list[dict] = []
+    for run in runs:
+        if run["type"] == "image":
+            filtered_runs.append(run)
+            continue
+        if run.get("text"):
+            filtered_runs.append(run)
+    return filtered_runs
 
 
 def parse_markdown(markdown_text: str) -> list[dict]:
@@ -537,6 +623,26 @@ def parse_markdown(markdown_text: str) -> list[dict]:
             blocks.append({"type": "math_block", "text": normalize_equation_for_word(stripped[2:-2])})
             index += 1
             continue
+        if "|" in line and index + 1 < len(lines) and is_table_separator_line(lines[index + 1]):
+            header_cells = split_table_row(line)
+            index += 2
+            rows: list[list[str]] = []
+            while index < len(lines):
+                current_row = lines[index]
+                current_stripped = current_row.strip()
+                if not current_stripped or "|" not in current_row:
+                    break
+                if is_table_separator_line(current_stripped):
+                    index += 1
+                    continue
+                rows.append(split_table_row(current_row))
+                index += 1
+            blocks.append({
+                "type": "table",
+                "header": [parse_inline(cell) for cell in header_cells],
+                "rows": [[parse_inline(cell) for cell in row] for row in rows],
+            })
+            continue
         heading_match = re.match(r"^(#{1,6})\s+(.*)$", line)
         if heading_match:
             blocks.append({
@@ -585,6 +691,7 @@ def parse_markdown(markdown_text: str) -> list[dict]:
                 or re.match(r"^\s*>\s?", current)
                 or parse_list_item(current) is not None
                 or re.match(r"^\s*---+\s*$", current_stripped)
+                or ("|" in current and index + 1 < len(lines) and is_table_separator_line(lines[index + 1]))
             ):
                 break
             buffer.append(current.strip())
@@ -614,12 +721,23 @@ def collect_math_items(blocks: list[dict]) -> list[dict[str, str]]:
                         append_math(run["text"], display=False)
         elif block["type"] == "math_block":
             append_math(block["text"], display=True)
+        elif block["type"] == "table":
+            for runs in block.get("header", []):
+                for run in runs:
+                    if run["type"] == "math":
+                        append_math(run["text"], display=False)
+            for row in block.get("rows", []):
+                for runs in row:
+                    for run in runs:
+                        if run["type"] == "math":
+                            append_math(run["text"], display=False)
     return math_items
 
 
 class MarkdownWordApp:
     def __init__(self) -> None:
         self.root = tk.Tk()
+        self.current_markdown_file: Path | None = None
         self.root.title("聊天 Markdown 导出 Word")
         self.root.geometry("980x720")
         self._build_ui()
@@ -670,6 +788,7 @@ class MarkdownWordApp:
             return
         self.text.delete("1.0", "end")
         self.text.insert("1.0", text)
+        self.current_markdown_file = None
         self.append_log("已从剪贴板读取内容。")
 
     def open_markdown_file(self) -> None:
@@ -679,9 +798,19 @@ class MarkdownWordApp:
         )
         if not path:
             return
-        content = Path(path).read_text(encoding="utf-8")
+        content = None
+        for encoding in ("utf-8", "utf-8-sig", "gb18030"):
+            try:
+                content = Path(path).read_text(encoding=encoding)
+                break
+            except UnicodeDecodeError:
+                continue
+        if content is None:
+            messagebox.showerror("读取失败", "无法识别文件编码（支持 utf-8 / utf-8-sig / gb18030）。")
+            return
         self.text.delete("1.0", "end")
         self.text.insert("1.0", content)
+        self.current_markdown_file = Path(path)
         self.append_log(f"已载入文件：{path}")
 
     def insert_demo(self) -> None:
@@ -711,6 +840,7 @@ def hello():
 """
         self.text.delete("1.0", "end")
         self.text.insert("1.0", demo)
+        self.current_markdown_file = None
         self.append_log("已插入示例内容。")
 
     def export_to_word(self) -> None:
@@ -732,9 +862,11 @@ def hello():
         try:
             normalized_markdown = normalize_markdown_content(markdown_text)
             blocks = parse_markdown(normalized_markdown)
+            source_dir = str(self.current_markdown_file.parent) if self.current_markdown_file else str(Path.cwd())
             payload = {
                 "blocks": blocks,
                 "math_items": collect_math_items(blocks),
+                "source_dir": source_dir,
             }
 
             with tempfile.NamedTemporaryFile("w", suffix=".json", delete=False, encoding="utf-8") as handle:
