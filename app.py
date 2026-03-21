@@ -307,6 +307,7 @@ def replace_extended_arrows(text: str) -> str:
 
 def replace_spacing_commands(text: str) -> str:
     replacements = {
+        r"\ ": " ",
         r"\qquad": " ",
         r"\quad": " ",
         r"\;": " ",

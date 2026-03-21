@@ -263,6 +263,13 @@ class AccentNode:
 
 
 @dataclass
+class GroupCharacterNode:
+    content: SequenceNode
+    char: str
+    position: str  # "top" or "bot"
+
+
+@dataclass
 class LimitNode:
     base: object
     lower: SequenceNode | None = None
@@ -292,6 +299,10 @@ class LatexTokenizer:
             if char == "\\":
                 if self.index + 1 < self.length and self.text[self.index + 1] == "\\":
                     tokens.append(Token("row_sep", "\\\\"))
+                    self.index += 2
+                    continue
+                if self.index + 1 < self.length and self.text[self.index + 1].isspace():
+                    # LaTeX `\ ` is a spacing command; treat it as whitespace.
                     self.index += 2
                     continue
                 if self.index + 1 < self.length and self.text[self.index + 1] in "{}[]()|":
@@ -530,6 +541,11 @@ class LatexParser:
                     left="(",
                     right=")",
                 )
+            if command in {"underbrace", "overbrace"}:
+                content = self.parse_required_group()
+                if command == "underbrace":
+                    return GroupCharacterNode(content, char="\u23DF", position="bot")
+                return GroupCharacterNode(content, char="\u23DE", position="top")
             if command == "sqrt":
                 degree = self.parse_optional_group("[", "]")
                 return RadicalNode(
@@ -691,6 +707,16 @@ class OmmlBuilder:
             base = ET.SubElement(accent, f"{M}e")
             self.append_sequence(base, node.base)
             return [accent]
+        if isinstance(node, GroupCharacterNode):
+            group_char = ET.Element(f"{M}groupChr")
+            group_char_pr = ET.SubElement(group_char, f"{M}groupChrPr")
+            chr_element = ET.SubElement(group_char_pr, f"{M}chr")
+            chr_element.set(f"{M}val", node.char)
+            pos_element = ET.SubElement(group_char_pr, f"{M}pos")
+            pos_element.set(f"{M}val", node.position)
+            base = ET.SubElement(group_char, f"{M}e")
+            self.append_sequence(base, node.content)
+            return [group_char]
         if isinstance(node, LimitNode):
             return self.build_limit(node.base, lower=node.lower, upper=node.upper)
         if isinstance(node, ScriptNode):
